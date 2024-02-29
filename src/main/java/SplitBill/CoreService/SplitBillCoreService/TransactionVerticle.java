@@ -79,39 +79,38 @@ public class TransactionVerticle extends AbstractVerticle {
         pool.getConnection()
           .onSuccess(conn ->
             conn.begin()
-              .compose(tx -> {
-                tx.rollback();
-                return conn.query("INSERT INTO public.transaction (payer_id, total, transaction_date, group_id, created_by) " +
-                    "VALUES ('" + transaction.getPayerId() +
-                    "', " + transaction.getTotalAmount() +
-                    ", '" + transaction.getTransactionDate() + "', " + transaction.getGroupId() + ", '" + transaction.getPayerId() + "') returning transaction_id")
-                  .execute()
-                  .onSuccess(res1 -> {
-                    Row row = res1.iterator().next();
-                    transaction.setTransactionId(row.getUUID("transaction_id"));
-                  })
-                  .compose(res1 ->
-                    conn
-                      .preparedQuery("INSERT INTO public.transaction_item (item_sequence, transaction_id, name, quantity, price ) " +
-                        "VALUES ($1, '" + transaction.getTransactionId() + "', $2, $3, $4)")
-                      .executeBatch(transactionItems)
-                      .compose(res2 ->
-                        conn.preparedQuery("INSERT INTO public.transaction_member (transaction_id, member_id, amount, is_paid) " +
-                            "VALUES ('" + transaction.getTransactionId() + "', $1, $2, $3) returning transaction_member_id")
-                          .executeBatch(transactionMembers)
-                          .compose(res3 -> conn
-                            .preparedQuery("INSERT INTO public.transaction_item_assignment (transaction_member_id, transaction_item_id, shares) " +
-                              "VALUES ((SELECT transaction_member_id FROM transaction_member WHERE member_id=$1 AND transaction_id='" + transaction.getTransactionId() + "')," +
-                              "(SELECT transaction_item_id FROM transaction_item WHERE item_sequence=$2 AND transaction_id='" + transaction.getTransactionId() + "') , $3)")
-                            .executeBatch(transactionItemAssignments)))
-                  )
-                  .compose(res4 -> tx.commit());
-              })
-              .eventually(v -> conn.close())
+              .compose(tx -> conn
+                .query("INSERT INTO public.transaction (payer_id, total, transaction_date, group_id, created_by) " +
+                  "VALUES ('" + transaction.getPayerId() +
+                  "', " + transaction.getTotalAmount() +
+                  ", '" + transaction.getTransactionDate() + "', " + transaction.getGroupId() + ", '" + transaction.getPayerId() + "') returning transaction_id")
+                .execute()
+                .onSuccess(res1 -> {
+                  Row row = res1.iterator().next();
+                  transaction.setTransactionId(row.getUUID("transaction_id"));
+                })
+                .compose(res1 ->
+                  conn
+                    .preparedQuery("INSERT INTO public.transaction_item (item_sequence, transaction_id, name, quantity, price ) " +
+                      "VALUES ($1, '" + transaction.getTransactionId() + "', $2, $3, $4)")
+                    .executeBatch(transactionItems)
+                    .compose(res2 ->
+                      conn.preparedQuery("INSERT INTO public.transaction_member (transaction_id, member_id, amount, is_paid) " +
+                          "VALUES ('" + transaction.getTransactionId() + "', $1, $2, $3) returning transaction_member_id")
+                        .executeBatch(transactionMembers)
+                        .compose(res3 -> conn
+                          .preparedQuery("INSERT INTO public.transaction_item_assignment (transaction_member_id, transaction_item_id, shares) " +
+                            "VALUES ((SELECT transaction_member_id FROM transaction_member WHERE member_id=$1 AND transaction_id='" + transaction.getTransactionId() + "')," +
+                            "(SELECT transaction_item_id FROM transaction_item WHERE item_sequence=$2 AND transaction_id='" + transaction.getTransactionId() + "') , $3)")
+                          .executeBatch(transactionItemAssignments)))
+                ).compose(res4 -> tx.commit())
+              )
+              .eventually(() -> conn.close())
               .onSuccess(v -> {
                 if (imageFilePath != null) {
                   String bucketName = "billy-transactions-s3";
                   String key = transaction.getTransactionId() + "_" + LocalDate.now() + ".jpg";
+                  System.out.println("Uploading picture to s3 with key: " + key);
 
                   File imageFile = new File(imageFilePath);
 
@@ -122,9 +121,25 @@ public class TransactionVerticle extends AbstractVerticle {
                     .build();
 
                   s3Client.putObject(putObjectRequest, imageFile.toPath());
+
+                  //add picture to transaction db
+                  pool.getConnection()
+                    .onSuccess(conn2 -> {
+                      conn2.query("UPDATE public.transaction SET bill_picture='" + key + "' WHERE transaction_id='" + transaction.getTransactionId() + "'")
+                        .execute()
+                        .onSuccess(res -> {
+                          System.out.println("Transaction inserted to db");
+                          message.reply("Transaction inserted to db");
+                        })
+                        .onFailure(err -> {
+                          System.out.println("Error inserting picture to db");
+                          err.printStackTrace();
+                        });
+                    });
                 }
               })
               .onFailure(err -> {
+
                 System.out.println("Error inserting transaction to db");
                 err.printStackTrace();
               })
