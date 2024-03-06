@@ -135,7 +135,12 @@ public class TransactionVerticle extends AbstractVerticle {
                     .build();
 
                   s3Client.putObject(putObjectRequest, imageFile.toPath());
-
+                  Path source = imageFile.toPath();
+                  try {
+                    Files.delete(source);
+                  } catch (IOException e) {
+                    e.printStackTrace();
+                  }
                   //add picture to transaction db
                   pool.query("UPDATE public.transaction SET bill_picture='" + key + "' WHERE transaction_id='" + transaction.getTransactionId() + "'")
                     .execute()
@@ -147,13 +152,6 @@ public class TransactionVerticle extends AbstractVerticle {
                       System.out.println("Error inserting picture to db");
                       err.printStackTrace();
                     });
-                  // delete the temp img file
-                  Path source = imageFile.toPath();
-                  try {
-                    Files.delete(source);
-                  } catch (IOException e) {
-                    e.printStackTrace();
-                  }
                 }
               })
               .onFailure(err -> {
