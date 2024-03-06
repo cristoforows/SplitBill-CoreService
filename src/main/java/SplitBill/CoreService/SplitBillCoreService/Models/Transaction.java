@@ -4,6 +4,7 @@ import com.ctc.wstx.shaded.msv_core.datatype.xsd.DateTimeType;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Arrays;
 import java.util.List;
 import java.util.UUID;
 
@@ -69,6 +70,10 @@ public class Transaction {
     return transactionDate;
   }
 
+  public void setTransactionDate(String transactionDate) {
+    this.transactionDate = transactionDate;
+  }
+
   public String getGroupId() {
     if (groupId != null) {
       return "'" + groupId + "'";
@@ -115,6 +120,61 @@ public class Transaction {
 
   public void addTransactionItemAssignment(TransactionItemAssignment transactionItemAssignment) {
     this.transactionItemAssignments.add(transactionItemAssignment);
+  }
+
+  public String membersArraytoJsonString(List<TransactionMember> members) {
+    if (members == null || members.isEmpty()) {
+      return "[]";
+    }
+    StringBuilder membersJson = new StringBuilder("[");
+    for (TransactionMember member : members) {
+      membersJson.append(member.toJsonString()).append(",");
+    }
+    membersJson.deleteCharAt(membersJson.length() - 1);
+    membersJson.append("]");
+    return membersJson.toString();
+  }
+
+  public String itemsArrayToJsonString(List<TransactionItem> items) {
+    if (items == null || items.isEmpty()) {
+      return "[]";
+    }
+    StringBuilder itemsJson = new StringBuilder("[");
+    for (TransactionItem item : items) {
+      itemsJson.append(item.toJsonString()).append(",");
+    }
+    itemsJson.deleteCharAt(itemsJson.length() - 1);
+    itemsJson.append("]");
+    return itemsJson.toString();
+  }
+
+  public String assignmentsArrayToJsonString(List<TransactionItemAssignment> assignments) {
+    if (assignments == null || assignments.isEmpty()) {
+      return "[]";
+    }
+    StringBuilder assignmentsJson = new StringBuilder("[");
+    for (TransactionItemAssignment assignment : assignments) {
+      assignmentsJson.append(assignment.toJsonString()).append(",");
+    }
+    assignmentsJson.deleteCharAt(assignmentsJson.length() - 1);
+    assignmentsJson.append("]");
+    return assignmentsJson.toString();
+  }
+
+  public String toJsonString() {
+    //check for null items members assign
+
+    return "{" +
+      "\"transactionId\":\"" + transactionId + "\"," +
+      "\"payerId\":\"" + payerId + "\"," +
+      "\"billPicture\":\"" + billPicture + "\"," +
+      "\"totalAmount\":" + totalAmount + "," +
+      "\"transactionDate\":\"" + transactionDate + "\"," +
+      "\"groupId\":\"" + groupId + "\"," +
+      "\"transactionItems\":" + itemsArrayToJsonString(transactionItems) + "," +
+      "\"transactionMembers\":" + membersArraytoJsonString(transactionMembers) + "," +
+      "\"transactionItemAssignments\":" + assignmentsArrayToJsonString(transactionItemAssignments) +
+      "}";
   }
 
   @Override

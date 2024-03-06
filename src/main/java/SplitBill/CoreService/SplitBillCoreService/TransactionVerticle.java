@@ -12,23 +12,31 @@ import io.vertx.sqlclient.Pool;
 import io.vertx.sqlclient.PoolOptions;
 import io.vertx.sqlclient.Row;
 import io.vertx.sqlclient.Tuple;
+import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
+
+import io.github.cdimascio.dotenv.Dotenv;
 
 public class TransactionVerticle extends AbstractVerticle {
 
   @Override
   public void start() {
-    vertx.eventBus().consumer("transaction.handler.addr", message -> {
+
+    Dotenv dotenv = Dotenv.load();
+
+    vertx.eventBus().consumer("newTransaction.handler.addr", message -> {
       JsonObject data = (JsonObject) message.body();
       // Retrieve JSON data and image file path
       JsonObject jsonPayload = data.getJsonObject("jsonData");
@@ -42,10 +50,10 @@ public class TransactionVerticle extends AbstractVerticle {
         // save transaction to db
         PgConnectOptions connectOptions = new PgConnectOptions()
           .setPort(5432)
-          .setHost("billy-transaction-service.crgqkgekiynr.ap-southeast-1.rds.amazonaws.com")
+          .setHost(dotenv.get("TRANSACTION_DB_HOSTNAME"))
           .setDatabase("postgres")
-          .setUser("billy")
-          .setPassword("IemNTU2023!");
+          .setUser(dotenv.get("TRANSACTION_DB_USERNAME"))
+          .setPassword(dotenv.get("TRANSACTION_DB_PASSWORD"));
 
         PoolOptions poolOptions = new PoolOptions()
           .setMaxSize(10);
@@ -70,10 +78,17 @@ public class TransactionVerticle extends AbstractVerticle {
           transactionItemAssignments.add(Tuple.of(transactionItemAssignment.getMemberId(), transactionItemAssignment.getTransactionItemSequence(), transactionItemAssignment.getShares()));
         }
 
+        String accessKeyId = dotenv.get("AWS_ACCESS_KEY_ID");
+        String secretAccessKey = dotenv.get("AWS_SECRET_ACCESS_KEY");
+
+        AwsBasicCredentials awsCredentials = AwsBasicCredentials.create(accessKeyId, secretAccessKey);
+        AwsCredentialsProvider credentialsProvider = StaticCredentialsProvider.create(awsCredentials);
+
         S3Client s3Client = S3Client.builder()
           .region(Region.AP_SOUTHEAST_1)
-          .credentialsProvider(EnvironmentVariableCredentialsProvider.create())
+          .credentialsProvider(credentialsProvider)
           .build();
+
 
         // insert transaction to db and get the id
         pool.getConnection()
@@ -110,7 +125,6 @@ public class TransactionVerticle extends AbstractVerticle {
                 if (imageFilePath != null) {
                   String bucketName = "billy-transactions-s3";
                   String key = transaction.getTransactionId() + "_" + LocalDate.now() + ".jpg";
-                  System.out.println("Uploading picture to s3 with key: " + key);
 
                   File imageFile = new File(imageFilePath);
 
@@ -123,19 +137,23 @@ public class TransactionVerticle extends AbstractVerticle {
                   s3Client.putObject(putObjectRequest, imageFile.toPath());
 
                   //add picture to transaction db
-                  pool.getConnection()
-                    .onSuccess(conn2 -> {
-                      conn2.query("UPDATE public.transaction SET bill_picture='" + key + "' WHERE transaction_id='" + transaction.getTransactionId() + "'")
-                        .execute()
-                        .onSuccess(res -> {
-                          System.out.println("Transaction inserted to db");
-                          message.reply("Transaction inserted to db");
-                        })
-                        .onFailure(err -> {
-                          System.out.println("Error inserting picture to db");
-                          err.printStackTrace();
-                        });
+                  pool.query("UPDATE public.transaction SET bill_picture='" + key + "' WHERE transaction_id='" + transaction.getTransactionId() + "'")
+                    .execute()
+                    .onSuccess(res -> {
+                      System.out.println("Transaction inserted to db");
+                      message.reply("Transaction inserted to db");
+                    })
+                    .onFailure(err -> {
+                      System.out.println("Error inserting picture to db");
+                      err.printStackTrace();
                     });
+                  // delete the temp img file
+                  Path source = imageFile.toPath();
+                  try {
+                    Files.delete(source);
+                  } catch (IOException e) {
+                    e.printStackTrace();
+                  }
                 }
               })
               .onFailure(err -> {
@@ -153,6 +171,94 @@ public class TransactionVerticle extends AbstractVerticle {
 
     });
 
+    vertx.eventBus().consumer("transactionsByUserID.handler.addr", message -> {
+      JsonObject data = (JsonObject) message.body();
+      String userId = data.getString("userId");
+
+      PgConnectOptions connectOptions = new PgConnectOptions()
+        .setPort(5432)
+        .setHost(dotenv.get("TRANSACTION_DB_HOSTNAME"))
+        .setDatabase("postgres")
+        .setUser(dotenv.get("TRANSACTION_DB_USERNAME"))
+        .setPassword(dotenv.get("TRANSACTION_DB_PASSWORD"));
+
+      PoolOptions poolOptions = new PoolOptions()
+        .setMaxSize(10);
+
+      Pool pool = Pool.pool(vertx, connectOptions, poolOptions);
+
+      String query = "SELECT t.transaction_id, t.total, t.payer_id, t.transaction_date, " +
+        "array_agg(tm.member_id) as member_ids, array_agg(tm.is_paid) as is_paid_statuses " +
+        "FROM transaction t " +
+        "JOIN transaction_member tm ON t.transaction_id = tm.transaction_id " +
+        "WHERE\n" +
+        "  t.transaction_id IN (\n" +
+        "    SELECT DISTINCT transaction_id\n" +
+        "    FROM transaction_member\n" +
+        "    WHERE member_id = '" + UUID.fromString(userId) + "'  )\n" +
+        "GROUP BY t.transaction_id, t.total, t.payer_id, t.transaction_date, t.bill_picture, t.group_id";
+
+      pool
+        .preparedQuery(query)
+        .execute()
+        .onSuccess(res -> {
+          List<Transaction> transactions = new ArrayList<>();
+          for (Row row : res) {
+            Transaction transaction = new Transaction();
+            transaction.setTransactionId(row.getUUID("transaction_id"));
+            transaction.setTotalAmount(row.getDouble("total"));
+            transaction.setPayerId(row.getUUID("payer_id").toString());
+            transaction.setTransactionDate(row.getLocalDate("transaction_date").toString());
+
+            List<TransactionMember> transactionMembers = new ArrayList<>();
+            for (int i = 0; i < row.getArrayOfUUIDs("member_ids").length; i++) {
+              TransactionMember transactionMember = new TransactionMember();
+              transactionMember.setMemberId(row.getArrayOfUUIDs("member_ids")[i]);
+              transactionMember.setIsPaid(row.getArrayOfBooleans("is_paid_statuses")[i]);
+              transactionMembers.add(transactionMember);
+            }
+            transaction.setTransactionMembers(transactionMembers);
+            transactions.add(transaction);
+          }
+          message.reply(new JsonObject(arrayOfJsonString(transactions)));
+        })
+        .onFailure(err -> {
+          System.out.println("Error retrieving transactions");
+          err.printStackTrace();
+        });
+    }); //handles finding transactions by user id
+
+    vertx.eventBus().consumer("findTransaction.handler.addr", message -> {
+      JsonObject data = (JsonObject) message.body();
+      String transactionId = data.getString("transactionId");
+
+      PgConnectOptions connectOptions = new PgConnectOptions()
+        .setPort(5432)
+        .setHost(dotenv.get("TRANSACTION_DB_HOSTNAME"))
+        .setDatabase("postgres")
+        .setUser(dotenv.get("TRANSACTION_DB_USERNAME"))
+        .setPassword(dotenv.get("TRANSACTION_DB_PASSWORD"));
+
+      PoolOptions poolOptions = new PoolOptions()
+        .setMaxSize(10);
+
+      Pool pool = Pool.pool(vertx, connectOptions, poolOptions);
+
+
+    }); //handles finding transaction by id
+
+  }
+
+  public String arrayOfJsonString(List<Transaction> transactions) {
+    StringBuilder jsonString = new StringBuilder("{ \"transactions\": [");
+    for (int i = 0; i < transactions.size(); i++) {
+      jsonString.append(transactions.get(i).toJsonString());
+      if (i != transactions.size() - 1) {
+        jsonString.append(",");
+      }
+    }
+    jsonString.append("]}");
+    return jsonString.toString();
   }
 }
 

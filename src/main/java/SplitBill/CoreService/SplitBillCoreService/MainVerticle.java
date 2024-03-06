@@ -27,7 +27,13 @@ public class MainVerticle extends AbstractVerticle {
     router.post("/api/v1/transaction")
       .consumes("multipart/form-data")
       .handler(BodyHandler.create())
-      .handler(this::TransactionHandler); //handles new transaction submission
+      .handler(this::NewTransactionHandler); //handles new transaction submission
+
+    router.get("/api/v1/transaction/:userId")
+      .handler(this::AllTransactionsHandler); //handles getting all transactions for a user
+
+    router.get("/api/v1/transaction/:transactionId")
+      .handler(this::FindTransactionByIDHandler); //handles getting a transaction by id
 
     vertx.createHttpServer()
       .requestHandler(router)
@@ -39,49 +45,74 @@ public class MainVerticle extends AbstractVerticle {
       );
   }
 
-  private void TransactionHandler(RoutingContext routingContext) {
+  private void NewTransactionHandler(RoutingContext routingContext) {
     // Extract JSON data
     JsonObject jsonData = new JsonObject(routingContext.request().getFormAttribute("payload"));
 
     List<FileUpload> fileUploads = routingContext.fileUploads();
 
+    String imageFilePath = null;
+
     if (!fileUploads.isEmpty()) {
-      // Image is uploaded, handle the first file
       FileUpload fileUpload = fileUploads.get(0);
-      String originalFilename = fileUpload.fileName();
-      String uniqueFilename = generateUniqueFilename(originalFilename);
+      imageFilePath = saveFileAndGetPath(fileUpload);
+    }
 
-      Path source = Paths.get(fileUpload.uploadedFileName());
-      Path destination = Paths.get(uniqueFilename);
+    JsonObject message = new JsonObject()
+      .put("jsonData", jsonData)
+      .put("imageFilePath", imageFilePath);
 
-      try {
-        // Use Files.move to save the file to the destination
-        Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
-      } catch (IOException e) {
-        e.printStackTrace();
-        routingContext.response().end("Error saving the file");
-        return;
+    vertx.eventBus().request("newTransaction.handler.addr", message, reply -> {
+      if (reply.succeeded()) {
+        routingContext.response().putHeader("Content-type", "application/json").end(reply.result().body().toString());
+      } else {
+        routingContext.response().end("Transaction could not be saved");
       }
-      vertx.eventBus().request("transaction.handler.addr", new JsonObject()
-        .put("jsonData", jsonData)
-        .put("imageFilePath", destination.toString()), reply -> {
-        if (reply.succeeded()) {
-          routingContext.response().putHeader("Content-type", "application/json").end(reply.result().body().toString());
-        } else {
-          System.out.println(reply.cause());
-          routingContext.response().end("Transaction could not be saved");
-        }
-      });
-    } else {
-      vertx.eventBus().request("transaction.handler.addr", new JsonObject()
-        .put("jsonData", jsonData), reply -> {
-        if (reply.succeeded()) {
-          routingContext.response().putHeader("Content-type", "application/json").end(reply.result().body().toString());
-        } else {
-          System.out.println(reply.cause());
-          routingContext.response().end("Transaction could not be saved");
-        }
-      });
+    });
+  }
+
+  private void AllTransactionsHandler(RoutingContext routingContext) {
+    System.out.println("start here");
+    // send user id to get all transactions
+    JsonObject message = new JsonObject()
+      .put("userId", routingContext.request().getParam("userId"));
+    System.out.println("message: " + message.toString());
+    vertx.eventBus().request("transactionsByUserID.handler.addr", message, reply -> {
+      if (reply.succeeded()) {
+        routingContext.response().putHeader("Content-type", "application/json").end(reply.result().body().toString());
+      } else {
+        routingContext.response().end("Transactions could not be retrieved");
+      }
+    });
+  }
+
+  private void FindTransactionByIDHandler(RoutingContext routingContext) {
+    // send transaction id to get transaction
+    JsonObject message = new JsonObject()
+      .put("transactionId", routingContext.request().getParam("transactionId"));
+
+    vertx.eventBus().request("findTransaction.handler.addr", message, reply -> {
+      if (reply.succeeded()) {
+        routingContext.response().putHeader("Content-type", "application/json").end(reply.result().body().toString());
+      } else {
+        routingContext.response().end("Transaction could not be retrieved");
+      }
+    });
+  }
+
+  private String saveFileAndGetPath(FileUpload fileUpload) {
+    String originalFilename = fileUpload.fileName();
+    String uniqueFilename = generateUniqueFilename(originalFilename);
+
+    Path source = Paths.get(fileUpload.uploadedFileName());
+    Path destination = Paths.get(uniqueFilename);
+
+    try {
+      Files.move(source, destination, StandardCopyOption.REPLACE_EXISTING);
+      return destination.toString();
+    } catch (IOException e) {
+      e.printStackTrace();
+      return null;
     }
   }
 

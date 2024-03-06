@@ -61,6 +61,16 @@ public class TransactionItem {
     this.quantity = quantity;
   }
 
+  public String toJsonString() {
+    return "{" +
+      "\"itemId\":\"" + itemId + "\"," +
+      "\"itemSequence\":" + itemSequence + "," +
+      "\"itemName\":\"" + itemName + "\"," +
+      "\"price\":" + price + "," +
+      "\"quantity\":" + quantity +
+      "}";
+  }
+
   @Override
   public String toString() {
     return "TransactionItem{" +

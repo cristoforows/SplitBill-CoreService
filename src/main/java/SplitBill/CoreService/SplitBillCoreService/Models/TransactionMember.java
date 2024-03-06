@@ -50,6 +50,15 @@ public class TransactionMember {
     this.hasVerified = hasVerified;
   }
 
+  public String toJsonString() {
+    return "{" +
+      "\"memberId\":\"" + memberId + "\"," +
+      "\"amount\":" + amount + "," +
+      "\"isPaid\":" + isPaid + "," +
+      "\"hasVerified\":" + hasVerified +
+      "}";
+  }
+
   @Override
   public String toString() {
     return "TransactionMember{" +

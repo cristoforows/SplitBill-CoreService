@@ -51,6 +51,15 @@ public class TransactionItemAssignment {
     this.shares = shares;
   }
 
+  public String toJsonString() {
+    return "{" +
+      "\"transactionItemId\":\"" + transactionItemId + "\"," +
+      "\"transactionItemSequence\":" + transactionItemSequence + "," +
+      "\"memberId\":\"" + memberId + "\"," +
+      "\"shares\":" + shares +
+      "}";
+  }
+
   @Override
   public String toString() {
     return "TransactionItemAssignment{" +
