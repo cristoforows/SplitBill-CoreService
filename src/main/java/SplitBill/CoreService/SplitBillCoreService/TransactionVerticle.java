@@ -14,7 +14,6 @@ import io.vertx.sqlclient.Row;
 import io.vertx.sqlclient.Tuple;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
 import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
-import software.amazon.awssdk.auth.credentials.EnvironmentVariableCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
 import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -229,6 +228,8 @@ public class TransactionVerticle extends AbstractVerticle {
     vertx.eventBus().consumer("findTransaction.handler.addr", message -> {
       JsonObject data = (JsonObject) message.body();
       String transactionId = data.getString("transactionId");
+      Transaction transaction = new Transaction();
+      transaction.setTransactionId(UUID.fromString(transactionId));
 
       PgConnectOptions connectOptions = new PgConnectOptions()
         .setPort(5432)
@@ -242,6 +243,65 @@ public class TransactionVerticle extends AbstractVerticle {
 
       Pool pool = Pool.pool(vertx, connectOptions, poolOptions);
 
+      String query = "SELECT " +
+        "t.transaction_id, " +
+        "t.total, " +
+        "t.payer_id, " +
+        "t.transaction_date, " +
+        "tm.member_id, " +
+        "tm.is_paid, " +
+        "tm.amount, " +
+        "ARRAY_AGG(ti.transaction_item_id) AS item_ids, " +
+        "ARRAY_AGG(ti.name) AS item_names, " +
+        "ARRAY_AGG(ti.quantity) AS item_quantities, " +
+        "ARRAY_AGG(ti.price) AS item_prices, " +
+        "ARRAY_AGG(tia.shares) AS shares_per_item " +
+        "FROM transaction t " +
+        "JOIN transaction_member tm ON t.transaction_id = tm.transaction_id " +
+        "JOIN transaction_item ti ON t.transaction_id = ti.transaction_id " +
+        "JOIN transaction_item_assignment tia ON tia.transaction_item_id = ti.transaction_item_id " +
+        "AND tia.transaction_member_id = tm.transaction_member_id " +
+        "WHERE t.transaction_id = " + transaction.getTransactionId() + " " +  // Prepared statement for parameter binding
+        "GROUP BY t.transaction_id, t.total, t.transaction_date, t.payer_id, tm.member_id, tm.is_paid, tm.amount;";
+
+      pool
+        .query(query)
+        .execute()
+        .onSuccess(res -> {
+          transaction.setTransactionDate(res.iterator().next().getLocalDate("transaction_date").toString());
+          transaction.setTotalAmount(res.iterator().next().getDouble("total"));
+          transaction.setPayerId(res.iterator().next().getUUID("payer_id").toString());
+
+          List<TransactionMember> transactionMembers = new ArrayList<>();
+          List<TransactionItem> transactionItems = new ArrayList<>();
+          for (Row row : res) {
+            TransactionMember transactionMember = new TransactionMember();
+            transactionMember.setMemberId(UUID.fromString(row.getUUID("member_id").toString()));
+            transactionMember.setIsPaid(row.getBoolean("is_paid"));
+            transactionMember.setAmount(row.getDouble("amount"));
+            transactionMembers.add(transactionMember);
+
+            for (int i = 0; i < row.getArrayOfUUIDs("item_ids").length; i++) {
+              TransactionItem transactionItem = new TransactionItem();
+              if (!transaction.hasTransactionItemId(row.getArrayOfUUIDs("item_ids")[i])) {
+                transactionItem.setItemId(row.getArrayOfUUIDs("item_ids")[i].toString());
+                transactionItem.setItemName(row.getArrayOfStrings("item_names")[i]);
+                transactionItem.setQuantity(row.getArrayOfIntegers("item_quantities")[i]);
+                transactionItem.setPrice(row.getArrayOfFloats("item_prices")[i]);
+                transaction.addTransactionItem(transactionItem);
+              }
+
+              TransactionItemAssignment transactionItemAssignment = new TransactionItemAssignment();
+              transactionItemAssignment.setTransactionItemId(row.getArrayOfUUIDs("item_ids")[i].toString());
+              transactionItemAssignment.setMemberId(UUID.fromString(row.getUUID("member_id").toString()));
+              transactionItemAssignment.setShares(row.getArrayOfIntegers("shares_per_item")[i]);
+              transaction.addTransactionItemAssignment(transactionItemAssignment);
+            }
+          }
+          transaction.setTransactionMembers(transactionMembers);
+        });
+
+      message.reply(new JsonObject(transaction.toJsonString()));
 
     }); //handles finding transaction by id
 

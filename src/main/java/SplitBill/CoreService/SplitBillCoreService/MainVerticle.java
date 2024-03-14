@@ -29,10 +29,10 @@ public class MainVerticle extends AbstractVerticle {
       .handler(BodyHandler.create())
       .handler(this::NewTransactionHandler); //handles new transaction submission
 
-    router.get("/api/v1/transaction/:userId")
+    router.get("/api/v1/transaction/user/:userId")
       .handler(this::AllTransactionsHandler); //handles getting all transactions for a user
 
-    router.get("/api/v1/transaction/:transactionId")
+    router.get("/api/v1/transaction/transaction/:transactionId")
       .handler(this::FindTransactionByIDHandler); //handles getting a transaction by id
 
     vertx.createHttpServer()

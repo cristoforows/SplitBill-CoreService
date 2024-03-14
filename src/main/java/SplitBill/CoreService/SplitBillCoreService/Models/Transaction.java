@@ -34,6 +34,15 @@ public class Transaction {
     this.transactionItemAssignments = transactionItemAssignments;
   }
 
+  public boolean hasTransactionItemId(UUID transactionItemId) {
+    for (TransactionItem item : transactionItems) {
+      if (item.getItemId().equals(transactionItemId.toString())) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   public String getTransactionId() {
     return transactionId;
   }
